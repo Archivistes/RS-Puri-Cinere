@@ -21,7 +21,18 @@ try {
         throw new RuntimeException('Unable to start session.');
     }
 } catch (Throwable $exception) {
-    error_log('Session initialization failed ('.get_class($exception).').');
+    $reason = match (true) {
+        $exception->getMessage() === 'Cloud database settings are missing.' => 'missing_db_settings',
+        str_contains($exception->getMessage(), 'could not find driver') => 'missing_pdo_pgsql',
+        stripos($exception->getMessage(), 'endpoint ID') !== false => 'neon_endpoint_required',
+        stripos($exception->getMessage(), 'password authentication failed') !== false => 'database_auth_failed',
+        stripos($exception->getMessage(), 'invalid connection option') !== false => 'invalid_connection_option',
+        stripos($exception->getMessage(), 'SSL') !== false => 'database_tls_error',
+        default => 'session_error'
+    };
+    $sqlState = $exception instanceof PDOException && preg_match('/^[A-Z0-9]{5}$/D',(string)$exception->getCode())
+        ? (string)$exception->getCode() : 'n/a';
+    error_log("Session initialization failed ($reason, state=$sqlState).");
     http_response_code(503);
     exit('Layanan sesi belum tersedia.');
 }

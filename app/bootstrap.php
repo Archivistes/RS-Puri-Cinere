@@ -3,17 +3,27 @@ declare(strict_types=1);
 
 date_default_timezone_set('Asia/Jakarta');
 
+function openDatabase(): PDO
+{
+    $dsn = getenv('POLI_DSN');
+    $user = getenv('POLI_DB_USER');
+    $password = getenv('POLI_DB_PASSWORD');
+    if (defined('POLI_CLOUD') && (!$dsn || !$user || !$password)) {
+        throw new RuntimeException('Cloud database settings are missing.');
+    }
+    return new PDO($dsn ?: 'pgsql:host=127.0.0.1;port=5432;dbname=dashboard_poli',
+        $user ?: 'dashboard_app', $password ?: '', [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+        ]);
+}
+
 function db(): PDO
 {
     static $connection;
     if (!$connection) {
-        $dsn = getenv('POLI_DSN') ?: 'pgsql:host=127.0.0.1;port=5432;dbname=dashboard_poli';
-        $connection = new PDO($dsn, getenv('POLI_DB_USER') ?: 'dashboard_app',
-            getenv('POLI_DB_PASSWORD') ?: '', [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_EMULATE_PREPARES => false,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-            ]);
+        $connection = openDatabase();
         $connection->exec("SET search_path TO poli, pg_temp");
         $connection->exec("SET TIME ZONE 'Asia/Jakarta'");
     }

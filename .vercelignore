@@ -1,0 +1,7 @@
+/.demo
+/.env*
+/dist
+/*.log
+/*.docx
+/*.pdf
+/*.zip

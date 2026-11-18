@@ -1,0 +1,5 @@
+{
+  "name": "rs-puri-cinere-dashboard",
+  "private": true,
+  "engines": { "node": "22.x" }
+}

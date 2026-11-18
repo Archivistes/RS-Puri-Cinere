@@ -5,12 +5,26 @@ require __DIR__.'/../app/bootstrap.php';
 ini_set('session.use_strict_mode','1');
 session_set_cookie_params([
     'httponly'=>true, 'samesite'=>'Lax', 'path'=>'/',
-    'secure'=>getenv('POLI_HTTPS') === '1'
+    'secure'=>getenv('POLI_HTTPS') === '1' || getenv('VERCEL') === '1'
 ]);
-session_start();
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 header("Content-Security-Policy: default-src 'self'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+try {
+    if (defined('POLI_CLOUD')) {
+        require __DIR__.'/../app/PostgresSession.php';
+        ini_set('session.gc_probability','1');
+        ini_set('session.gc_divisor','100');
+        session_set_save_handler(new PostgresSession(),true);
+    }
+    if (!session_start()) {
+        throw new RuntimeException('Unable to start session.');
+    }
+} catch (Throwable $exception) {
+    error_log('Session initialization failed ('.get_class($exception).').');
+    http_response_code(503);
+    exit('Layanan sesi belum tersedia.');
+}
 $_SESSION['csrf'] ??= bin2hex(random_bytes(32));
 $user = null;
 $error = '';

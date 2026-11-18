@@ -1,5 +1,6 @@
 /.demo/
 /.vercel/
+/dist/
 /.env
 /.env.*
 *.log

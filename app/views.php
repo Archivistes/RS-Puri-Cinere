@@ -198,7 +198,7 @@ $reported = count(array_filter($reports,fn($r)=>$r['versi'] !== null));
 $patients = (int)array_sum(array_column($reports,'pasien'));
 $completion = $total ? (int)round(100*$reported/$total) : 0;
 $metrics = [
-    ['Shift terjadwal',$total,'Kombinasi poli dan shift sesuai filter'],
+    ['Shift terjadwal',$total,'primary','Kombinasi poli dan shift sesuai filter'],
     ['Laporan masuk',$reported,'green','Sudah dikirim oleh petugas'],
     ['Belum melapor',$total-$reported,'orange','Menunggu pengisian'],
     ['Pasien terlayani',$patients,'azure','Dari laporan yang masuk'],

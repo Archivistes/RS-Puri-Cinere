@@ -46,7 +46,9 @@ $today = today();
 $date = $_GET['tanggal'] ?? $today;
 if (!is_string($date) || !validDate($date)) $date = $today;
 $poliFilter = positiveId($_GET['poli'] ?? null);
-$id = positiveId($_GET['id'] ?? $_POST['id'] ?? null);
+$id = positiveId($_GET['id'] ?? null);
+$shiftChoice = $_GET['shift'] ?? '';
+$shiftChoice = in_array($shiftChoice,['Pagi','Sore'],true) ? $shiftChoice : '';
 $forbidden = static function (): never {
     http_response_code(403);
     exit('Akses ditolak.');
@@ -76,66 +78,45 @@ try {
             session_destroy();
             redirect();
         }
-        if (in_array($action,['assignment-save','assignment-delete'],true)) {
-            if ($user['peran'] !== 'admin') $forbidden();
-            db()->beginTransaction();
-            $old = $id ? lockedAssignment($id) : null;
-            if ($old && query('SELECT 1 FROM laporan WHERE penugasan_id=?',[$id])->fetchColumn()) {
-                throw new DomainException('Penugasan yang sudah memiliki laporan tidak dapat diubah atau dihapus.');
-            }
-            if ($action === 'assignment-delete') {
-                if (!$old) throw new DomainException('Pilih penugasan yang akan dihapus.');
-                query('DELETE FROM penugasan WHERE id=?',[$id]);
-                $savedDate = $old['tanggal'];
-            } else {
-                $savedDate = (string) ($_POST['tanggal'] ?? '');
-                $shift = $_POST['shift'] ?? '';
-                $poli = positiveId($_POST['poli'] ?? null);
-                $staff = positiveId($_POST['petugas'] ?? null);
-                if (!validDate($savedDate) || !$poli || !$staff || !in_array($shift,['Pagi','Sore'],true)) {
-                    throw new DomainException('Lengkapi tanggal, poli, shift, dan petugas.');
-                }
-                if (!query('SELECT 1 FROM jadwal_praktik WHERE poli_id=? AND shift=?
-                    AND hari=extract(isodow FROM CAST(? AS date))',[$poli,$shift,$savedDate])->fetchColumn()) {
-                    throw new DomainException('Belum ada dokter terjadwal untuk poli, hari, dan shift tersebut.');
-                }
-                if ($old) {
-                    query('UPDATE penugasan SET petugas_id=?,poli_id=?,tanggal=?,shift=? WHERE id=?',
-                        [$staff,$poli,$savedDate,$shift,$id]);
-                } else {
-                    query('INSERT INTO penugasan(petugas_id,poli_id,tanggal,shift) VALUES (?,?,?,?)',
-                        [$staff,$poli,$savedDate,$shift]);
-                }
-            }
-            db()->commit();
-            $_SESSION['notice'] = $action === 'assignment-delete' ? 'Penugasan dihapus.' : 'Penugasan tersimpan.';
-            redirect('/?view=assignments&tanggal='.rawurlencode($savedDate));
-        }
+        if (in_array($action,['assignment-save','assignment-delete'],true)) $forbidden();
         if (in_array($action,['report-save','report-delete'],true)) {
-            if ($user['peran'] !== 'petugas') $forbidden();
+            if ($user['peran'] !== 'petugas' || $route !== 'report') $forbidden();
             db()->beginTransaction();
-            $assignment = lockedAssignment($id);
-            if ((int) $assignment['petugas_id'] !== (int) $user['id'] || $assignment['tanggal'] !== $today) {
+            $reportId = $id;
+            if (!$reportId) {
+                if ($action !== 'report-save' || !$poliFilter || !$shiftChoice
+                    || !scheduledDoctors($poliFilter,$today,$shiftChoice)) {
+                    throw new DomainException('Pilih poli dan shift yang memiliki jadwal hari ini.');
+                }
+                query('INSERT INTO penugasan(petugas_id,poli_id,tanggal,shift) VALUES (?,?,?,?)
+                    ON CONFLICT (poli_id,tanggal,shift) DO NOTHING',
+                    [$user['id'],$poliFilter,$today,$shiftChoice]);
+                $reportId = (int)query('SELECT id FROM penugasan WHERE poli_id=? AND tanggal=? AND shift=?',
+                    [$poliFilter,$today,$shiftChoice])->fetchColumn();
+            }
+            $assignment = lockedAssignment($reportId);
+            if ($assignment['tanggal'] !== $today) {
                 db()->rollBack();
                 $forbidden();
             }
-            $version = query('SELECT versi FROM laporan WHERE penugasan_id=?',[$id])->fetchColumn();
+            $version = query('SELECT versi FROM laporan WHERE penugasan_id=?',[$reportId])->fetchColumn();
             if ((int) $version !== (int) ($_POST['versi'] ?? -1)) {
                 db()->rollBack();
                 $_SESSION['notice'] = 'Laporan sudah berubah. Periksa data terbaru sebelum menyimpan atau menghapus.';
-                redirect('/?view=report&id='.$id);
+                redirect('/?view=report&id='.$reportId);
             }
             if ($action === 'report-delete') {
                 if (!$version) throw new DomainException('Laporan sudah dihapus.');
-                query('DELETE FROM laporan WHERE penugasan_id=?',[$id]);
+                query('DELETE FROM laporan WHERE penugasan_id=?',[$reportId]);
             } else {
-                $doctorRows = assignmentDetails($id,(bool) $version);
+                $doctorRows = $version ? savedDoctors($reportId)
+                    : scheduledDoctors((int)$assignment['poli_id'],$today,$assignment['shift']);
                 if (!$doctorRows) throw new DomainException('Jadwal dokter belum tersedia.');
                 $notes = textField($_POST['catatan'] ?? '',2000);
                 if ($version) {
-                    query('UPDATE laporan SET catatan=?,diperbarui=now(),versi=versi+1 WHERE penugasan_id=?',[$notes,$id]);
+                    query('UPDATE laporan SET catatan=?,diperbarui=now(),versi=versi+1 WHERE penugasan_id=?',[$notes,$reportId]);
                 } else {
-                    query('INSERT INTO laporan(penugasan_id,catatan) VALUES (?,?)',[$id,$notes]);
+                    query('INSERT INTO laporan(penugasan_id,catatan) VALUES (?,?)',[$reportId,$notes]);
                 }
                 foreach ($doctorRows as $row) {
                     $doctor = $row['dokter_id'];
@@ -144,18 +125,18 @@ try {
                     $values = inputDetail($inputs);
                     if ($version) {
                         query('UPDATE detail_kinerja SET datang=?,pulang=?,pasien=?,status=?,kendala=?
-                            WHERE penugasan_id=? AND dokter_id=?',[...$values,$id,$doctor]);
+                            WHERE penugasan_id=? AND dokter_id=?',[...$values,$reportId,$doctor]);
                     } else {
                         query('INSERT INTO detail_kinerja
                             (datang,pulang,pasien,status,kendala,penugasan_id,dokter_id,mulai_rencana,selesai_rencana,target)
-                            VALUES (?,?,?,?,?,?,?,?,?,?)',[...$values,$id,$doctor,$row['mulai_rencana'],
+                            VALUES (?,?,?,?,?,?,?,?,?,?)',[...$values,$reportId,$doctor,$row['mulai_rencana'],
                                 $row['selesai_rencana'],$row['target']]);
                     }
                 }
             }
             db()->commit();
             $_SESSION['notice'] = $action === 'report-delete' ? 'Laporan dihapus.' : 'Laporan tersimpan.';
-            redirect($action === 'report-delete' ? '/' : '/?view=report&id='.$id);
+            redirect($action === 'report-delete' ? '/' : '/?view=report&id='.$reportId);
         }
         http_response_code(400);
         exit('Tindakan tidak tersedia.');

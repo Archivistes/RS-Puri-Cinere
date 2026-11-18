@@ -72,6 +72,7 @@ try {
         $grants = Join-Path $PSScriptRoot 'sql/04_hak_akses.sql'
         RunPsql -d dashboard_poli -f $schema -f $seed -f $grants
     }
+    RunPsql -d dashboard_poli -f (Join-Path $PSScriptRoot 'sql/06_akun_petugas_bersama.sql')
     $env:POLI_DSN = 'pgsql:host=127.0.0.1;port=55437;dbname=dashboard_poli'
     $env:POLI_DB_USER = 'postgres'
     $env:POLI_DB_PASSWORD = $ownerPassword
@@ -83,7 +84,7 @@ try {
     $env:POLI_DB_PASSWORD = $appPassword
     $env:POLI_HTTPS = '0'
     Write-Host 'Buka http://127.0.0.1:8789 di browser.'
-    Write-Host 'Akun: admin.demo atau petugas.dalam'
+    Write-Host 'Akun: admin.demo atau petugas.poli'
     Write-Host "Kata sandi demo: $env:POLI_DEMO_PASSWORD"
     Remove-Item Env:POLI_DEMO_PASSWORD,Env:PGPASSWORD -ErrorAction SilentlyContinue
     & $phpExe @phpFlags -S '127.0.0.1:8789' -t (Join-Path $PSScriptRoot 'public')

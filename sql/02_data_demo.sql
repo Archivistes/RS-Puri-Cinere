@@ -2,13 +2,13 @@ BEGIN;
 SET LOCAL search_path TO poli, public;
 SET LOCAL TIME ZONE 'Asia/Jakarta';
 -- Demo only. Set passwords for demo accounts with scripts/demo-password.php.
-INSERT INTO pengguna (nama,username,password_hash,peran) VALUES
-('Admin Demo','admin.demo','DISABLED','admin'),
-('Petugas Penyakit Dalam','petugas.dalam','DISABLED','petugas'),
-('Petugas Anak','petugas.anak','DISABLED','petugas'),
-('Petugas Mata','petugas.mata','DISABLED','petugas'),
-('Petugas Jantung','petugas.jantung','DISABLED','petugas'),
-('Petugas Kulit','petugas.kulit','DISABLED','petugas');
+INSERT INTO pengguna (nama,username,password_hash,peran,aktif) VALUES
+('Admin Demo','admin.demo','DISABLED','admin',true),
+('Petugas Poli','petugas.poli','DISABLED','petugas',true),
+('Akun Arsip 1','arsip.1','DISABLED','petugas',false),
+('Akun Arsip 2','arsip.2','DISABLED','petugas',false),
+('Akun Arsip 3','arsip.3','DISABLED','petugas',false),
+('Akun Arsip 4','arsip.4','DISABLED','petugas',false);
 INSERT INTO poliklinik(nama,target_harian) VALUES
 ('Penyakit Dalam',20),('Anak',16),('Mata',14),('Jantung',12),('Kulit dan Kelamin',15);
 INSERT INTO dokter(nama,spesialisasi) VALUES
@@ -24,8 +24,10 @@ FROM dokter d
 JOIN poliklinik p ON p.id=CASE WHEN d.id=6 THEN 1 ELSE d.id END
 CROSS JOIN generate_series(1,7) n;
 INSERT INTO penugasan(petugas_id,poli_id,tanggal,shift)
-SELECT p.id+1,p.id,CURRENT_DATE+x,CASE WHEN p.id IN (4,5) THEN 'Sore' ELSE 'Pagi' END
-FROM poliklinik p CROSS JOIN generate_series(-2,0) x ORDER BY x,p.id;
+SELECT u.id,p.id,CURRENT_DATE+x,CASE WHEN p.id IN (4,5) THEN 'Sore' ELSE 'Pagi' END
+FROM poliklinik p CROSS JOIN generate_series(-2,0) x
+CROSS JOIN (SELECT id FROM pengguna WHERE username='petugas.poli') u
+ORDER BY x,p.id;
 INSERT INTO laporan(penugasan_id,catatan)
 SELECT id,'Data simulasi praktik poliklinik' FROM penugasan
 WHERE tanggal < CURRENT_DATE OR poli_id IN (2,3,4);

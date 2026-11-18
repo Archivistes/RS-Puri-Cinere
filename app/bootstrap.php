@@ -79,18 +79,20 @@ function lockedAssignment(int $id): array
     return $row;
 }
 
-function assignmentDetails(int $id, bool $existing): array
+function scheduledDoctors(int $poli, string $date, string $shift): array
 {
-    if ($existing) {
-        return query('SELECT d.*,k.nama,k.spesialisasi FROM detail_kinerja d
-            JOIN dokter k ON k.id=d.dokter_id WHERE d.penugasan_id=? ORDER BY k.nama,k.id',[$id])->fetchAll();
-    }
     return query("SELECT j.dokter_id,d.nama,d.spesialisasi,j.mulai AS mulai_rencana,
         j.selesai AS selesai_rencana,j.target,NULL AS datang,NULL AS pulang,0 AS pasien,
         'Hadir' AS status,'' AS kendala
-        FROM penugasan p JOIN jadwal_praktik j ON j.poli_id=p.poli_id AND j.shift=p.shift
-        AND j.hari=extract(isodow FROM p.tanggal) JOIN dokter d ON d.id=j.dokter_id
-        WHERE p.id=? ORDER BY d.nama,d.id",[$id])->fetchAll();
+        FROM jadwal_praktik j JOIN dokter d ON d.id=j.dokter_id
+        WHERE j.poli_id=? AND j.hari=extract(isodow FROM CAST(? AS date))
+        AND j.shift=? ORDER BY d.nama,d.id",[$poli,$date,$shift])->fetchAll();
+}
+
+function savedDoctors(int $id): array
+{
+    return query('SELECT d.*,k.nama,k.spesialisasi FROM detail_kinerja d
+        JOIN dokter k ON k.id=d.dokter_id WHERE d.penugasan_id=? ORDER BY k.nama,k.id',[$id])->fetchAll();
 }
 
 function inputDetail(array $data): array

@@ -8,54 +8,59 @@ function options(array $rows, mixed $selected): void {
     <option value="<?= escape($row['id']) ?>" <?= (string)$row['id'] === (string)$selected ? 'selected' : '' ?>><?= escape($row['nama']) ?></option>
     <?php endforeach;
 }
-function assignmentList(string $date, int $poli = 0, int $staff = 0): array
+function reportList(string $date, int $poli, string $shift): array
 {
-    return query('SELECT p.*,po.nama AS poli,u.nama AS petugas,l.versi,
-        COALESCE(k.sesi,0) AS sesi, k.pasien, k.terlambat
-        FROM penugasan p JOIN poliklinik po ON po.id=p.poli_id JOIN pengguna u ON u.id=p.petugas_id
+    return query("WITH selected_day AS (
+            SELECT CAST(? AS date) AS tanggal
+        ), shifts AS (
+            SELECT DISTINCT j.poli_id,j.shift FROM jadwal_praktik j CROSS JOIN selected_day day
+            WHERE j.hari=extract(isodow FROM day.tanggal)
+            UNION
+            SELECT p.poli_id,p.shift FROM penugasan p JOIN selected_day day USING (tanggal)
+        )
+        SELECT p.id,day.tanggal,s.poli_id,s.shift,po.nama AS poli,l.versi,k.pasien,k.terlambat
+        FROM shifts s CROSS JOIN selected_day day JOIN poliklinik po ON po.id=s.poli_id
+        LEFT JOIN penugasan p ON p.poli_id=s.poli_id AND p.shift=s.shift AND p.tanggal=day.tanggal
         LEFT JOIN laporan l ON l.penugasan_id=p.id
-        LEFT JOIN LATERAL (SELECT count(*) sesi,sum(pasien) pasien,round(avg(terlambat),1) terlambat
+        LEFT JOIN LATERAL (SELECT sum(pasien) pasien,round(avg(terlambat),1) terlambat
                            FROM detail_kinerja WHERE penugasan_id=p.id) k ON true
-        WHERE p.tanggal=? AND (?=0 OR p.poli_id=?) AND (?=0 OR p.petugas_id=?)
-        ORDER BY p.shift,po.nama',[$date,$poli,$poli,$staff,$staff])->fetchAll();
+        WHERE (?=0 OR s.poli_id=?) AND (?='' OR s.shift=?)
+        ORDER BY s.shift,po.nama",[$date,$poli,$poli,$shift,$shift])->fetchAll();
 }
 $admin = $user && $user['peran'] === 'admin';
-$assignments = [];
+$reports = [];
 $clinicOptions = [];
 $record = null;
 $rows = [];
-$assignmentForm = null;
-$staffOptions = [];
 if ($user) {
     if ($route === 'report') {
-        $record = query('SELECT p.*,po.nama AS poli,u.nama AS petugas,l.versi,l.catatan
-            FROM penugasan p JOIN poliklinik po ON po.id=p.poli_id JOIN pengguna u ON u.id=p.petugas_id
-            LEFT JOIN laporan l ON l.penugasan_id=p.id WHERE p.id=?',[$id])->fetch();
-        if (!$record || (!$admin && (int)$record['petugas_id'] !== (int)$user['id'])
-            || (!$record['versi'] && ($admin || $record['tanggal'] !== $today))) {
+        if ($id) {
+            $record = query('SELECT p.*,po.nama AS poli,l.versi,l.catatan
+                FROM penugasan p JOIN poliklinik po ON po.id=p.poli_id
+                LEFT JOIN laporan l ON l.penugasan_id=p.id WHERE p.id=?',[$id])->fetch();
+        } elseif (!$admin && $poliFilter && $shiftChoice) {
+            $name = query('SELECT nama FROM poliklinik WHERE id=?',[$poliFilter])->fetchColumn();
+            if ($name !== false) {
+                $record = ['poli_id'=>$poliFilter,'poli'=>$name,'shift'=>$shiftChoice,
+                    'tanggal'=>$today,'versi'=>null,'catatan'=>''];
+            }
+        }
+        if (!$record || (!$record['versi'] && ($admin || $record['tanggal'] !== $today))) {
             $forbidden();
         }
-        $rows = assignmentDetails($id,(bool)$record['versi']);
-    } elseif ($route === 'assignments') {
-        if (!$admin) $forbidden();
-        $assignments = assignmentList($date);
-        $clinicOptions = query('SELECT id,nama FROM poliklinik ORDER BY nama')->fetchAll();
-        $staffOptions = query("SELECT id,nama FROM pengguna WHERE peran='petugas' AND aktif ORDER BY nama")->fetchAll();
-        if ($id) {
-            $assignmentForm = query('SELECT p.*, l.versi FROM penugasan p LEFT JOIN laporan l ON l.penugasan_id=p.id WHERE p.id=?',[$id])->fetch();
-        }
+        $rows = $record['versi'] ? savedDoctors($id)
+            : scheduledDoctors((int)$record['poli_id'],$today,$record['shift']);
     } elseif ($route === 'home') {
-        $clinicOptions = $admin ? query('SELECT id,nama FROM poliklinik ORDER BY nama')->fetchAll() : [];
-        $assignments = assignmentList($date,$admin ? $poliFilter : 0,$admin ? 0 : (int)$user['id']);
+        $clinicOptions = query('SELECT id,nama FROM poliklinik ORDER BY nama')->fetchAll();
+        $reports = reportList($date,$poliFilter,$shiftChoice);
     } else {
         http_response_code(404);
         exit('Halaman tidak ditemukan.');
     }
 }
 $heading = !$user ? 'Masuk ke dashboard' : match($route) {
-    'assignments'=>'Penugasan petugas',
     'report'=>$record['versi'] ? ($admin || $record['tanggal'] !== $today ? 'Detail laporan' : 'Ubah laporan') : 'Isi laporan praktik',
-    default=>$admin ? 'Ringkasan rawat jalan' : 'Laporan poli saya'
+    default=>$admin ? 'Ringkasan rawat jalan' : 'Laporan poliklinik'
 };
 $initials = '';
 if ($user) {
@@ -86,12 +91,8 @@ $dateLabel = static function (string $value): string {
 <a class="navbar-brand hospital-brand" href="/"><span class="brand-symbol" aria-hidden="true"></span>
 <span>RS Puri Cinere<small>Kinerja Poliklinik</small></span></a>
 <nav class="navbar-nav" aria-label="Navigasi utama">
-<a class="nav-link <?= $route !== 'assignments' ? 'active' : '' ?>" <?= $route==='home' ? 'aria-current="page"' : '' ?> href="/">
+<a class="nav-link active" <?= $route==='home' ? 'aria-current="page"' : '' ?> href="/">
 <span class="nav-symbol grid-symbol" aria-hidden="true"></span><span><?= $admin ? 'Ringkasan' : 'Laporan poli' ?></span></a>
-<?php if ($admin): ?>
-<a class="nav-link <?= $route === 'assignments' ? 'active' : '' ?>" <?= $route==='assignments' ? 'aria-current="page"' : '' ?> href="/?view=assignments">
-<span class="nav-symbol list-symbol" aria-hidden="true"></span><span>Penugasan</span></a>
-<?php endif ?>
 </nav>
 </div>
 </aside>
@@ -133,13 +134,11 @@ $version = (int)$record['versi']; ?>
 <div class="card report-context mb-3"><div class="card-body">
 <div><span class="text-secondary">Poliklinik</span><strong><?= escape($record['poli']) ?></strong></div>
 <div><span class="text-secondary">Tanggal dan shift</span><strong><?= escape($dateLabel($record['tanggal'])) ?> · <?= escape($record['shift']) ?></strong></div>
-<div><span class="text-secondary">Petugas</span><strong><?= escape($record['petugas']) ?></strong></div>
 </div></div>
 <?php if ($editable): ?>
 <form method="post" class="stack">
 <?php csrf() ?>
 <input type="hidden" name="action" value="report-save">
-<input type="hidden" name="id" value="<?= $id ?>">
 <input type="hidden" name="versi" value="<?= $version ?>">
 <?php foreach ($rows as $row):
 $key = 'detail['.(int)$row['dokter_id'].']';
@@ -168,7 +167,7 @@ $entry = is_array($attempt) ? array_intersect_key($attempt,array_flip(['status',
 <?php if ($version): ?>
 <details class="danger-zone"><summary>Hapus laporan</summary><form method="post" class="stack">
 <?php csrf() ?><input type="hidden" name="action" value="report-delete"><input type="hidden" name="versi" value="<?= $version ?>">
-<p>Laporan dan seluruh detail dokter pada penugasan ini akan dihapus.</p><button class="btn btn-danger">Ya, hapus laporan</button></form></details>
+<p>Laporan dan seluruh detail dokter pada poli dan shift ini akan dihapus.</p><button class="btn btn-danger">Ya, hapus laporan</button></form></details>
 <?php endif ?>
 <?php else: ?>
 <div class="card"><div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>Dokter</th><th>Status</th><th>Pasien</th><th>Terlambat</th><th>Pulang cepat</th><th>Capaian</th><th>Kendala</th></tr></thead><tbody>
@@ -183,47 +182,29 @@ $entry = is_array($attempt) ? array_intersect_key($attempt,array_flip(['status',
 <?php endif ?>
 
 <?php else: ?>
-<?php if ($route === 'assignments'): ?>
-<?php if (!$assignmentForm || !$assignmentForm['versi']): ?>
-<form method="post" class="card card-body stack mb-3" action="/?view=assignments&amp;tanggal=<?= escape($date) ?><?= $assignmentForm ? '&amp;id='.(int)$assignmentForm['id'] : '' ?>">
-<?php csrf() ?><input type="hidden" name="action" value="assignment-save">
-<h2><?= $assignmentForm ? 'Ubah penugasan' : 'Tambah penugasan' ?></h2>
-<div class="fields">
-<label>Tanggal tugas<input class="form-control" type="date" name="tanggal" value="<?= escape($_POST['tanggal'] ?? $assignmentForm['tanggal'] ?? $date) ?>" required></label>
-<label>Poliklinik<select class="form-select" name="poli" required><option value="">Pilih poli</option><?php options($clinicOptions,$_POST['poli'] ?? $assignmentForm['poli_id'] ?? '') ?></select></label>
-<label>Shift<select class="form-select" name="shift"><?php foreach (['Pagi','Sore'] as $shift): ?><option <?= $shift === ($_POST['shift'] ?? $assignmentForm['shift'] ?? 'Pagi') ? 'selected' : '' ?>><?= $shift ?></option><?php endforeach ?></select></label>
-<label>Petugas<select class="form-select" name="petugas" required><option value="">Pilih petugas</option><?php options($staffOptions,$_POST['petugas'] ?? $assignmentForm['petugas_id'] ?? '') ?></select></label>
-</div>
-<div class="actions"><button class="btn btn-primary">Simpan penugasan</button><?php if ($assignmentForm): ?><a href="/?view=assignments&amp;tanggal=<?= escape($date) ?>">Batal</a><?php endif ?></div>
-</form>
-<?php if ($assignmentForm): ?>
-<details class="danger-zone"><summary>Hapus penugasan</summary><form method="post">
-<?php csrf() ?><input type="hidden" name="action" value="assignment-delete"><button class="btn btn-danger">Ya, hapus penugasan</button>
-</form></details>
-<?php endif ?>
-<?php endif ?>
-<?php endif ?>
 <form method="get" class="card filter-card"><div class="card-body filters">
 <input type="hidden" name="view" value="<?= escape($route) ?>">
 <label>Tanggal laporan<input class="form-control" type="date" name="tanggal" value="<?= escape($date) ?>" required></label>
-<?php if ($admin && $route === 'home'): ?>
 <label>Poliklinik<select class="form-select" name="poli"><option value="0">Semua poli</option><?php options($clinicOptions,$poliFilter) ?></select></label>
-<?php endif ?>
+<label>Shift<select class="form-select" name="shift">
+<option value="">Semua shift</option>
+<?php foreach (['Pagi','Sore'] as $shift): ?><option <?= $shift === $shiftChoice ? 'selected' : '' ?>><?= $shift ?></option><?php endforeach ?>
+</select></label>
 <button class="btn btn-outline-primary">Terapkan</button></div></form>
 
 <?php if ($admin && $route === 'home'):
-$total = count($assignments);
-$reported = count(array_filter($assignments,fn($r)=>$r['versi'] !== null));
-$patients = (int)array_sum(array_column($assignments,'pasien'));
+$total = count($reports);
+$reported = count(array_filter($reports,fn($r)=>$r['versi'] !== null));
+$patients = (int)array_sum(array_column($reports,'pasien'));
 $completion = $total ? (int)round(100*$reported/$total) : 0;
 $metrics = [
-    ['Penugasan',$total,'blue','Seluruh penugasan sesuai filter'],
+    ['Shift terjadwal',$total,'Kombinasi poli dan shift sesuai filter'],
     ['Laporan masuk',$reported,'green','Sudah dikirim oleh petugas'],
     ['Belum melapor',$total-$reported,'orange','Menunggu pengisian'],
     ['Pasien terlayani',$patients,'azure','Dari laporan yang masuk'],
 ];
 $byShift = ['Pagi'=>0, 'Sore'=>0];
-foreach ($assignments as $assignment) {
+foreach ($reports as $assignment) {
     $byShift[$assignment['shift']] += (int)$assignment['pasien'];
 }
 ?>
@@ -241,8 +222,8 @@ foreach ($assignments as $assignment) {
 <div class="col-md-5"><section class="card"><div class="card-body">
 <h2 class="card-title mb-2">Progres laporan</h2>
 <div class="d-flex justify-content-between align-items-baseline mb-2">
-<span class="text-secondary"><?= $reported ?> dari <?= $total ?> penugasan</span><strong class="progress-value"><?= $completion ?>%</strong></div>
-<progress class="report-progress" aria-label="Persentase penugasan dilaporkan" max="100" value="<?= $completion ?>"></progress>
+<span class="text-secondary"><?= $reported ?> dari <?= $total ?> shift terjadwal</span><strong class="progress-value"><?= $completion ?>%</strong></div>
+<progress class="report-progress" aria-label="Persentase shift yang sudah dilaporkan" max="100" value="<?= $completion ?>"></progress>
 </div></section></div>
 <div class="col-md-7"><section class="card"><div class="card-body">
 <h2 class="card-title mb-2">Pasien per shift</h2>
@@ -256,19 +237,20 @@ foreach ($assignments as $assignment) {
 <?php endif ?>
 
 <section class="card report-list">
-<div class="card-header"><h2 class="card-title"><?= $route === 'assignments' ? 'Daftar penugasan' : 'Laporan per poli dan shift' ?></h2>
-<span class="badge bg-secondary-lt ms-auto"><?= count($assignments) ?> penugasan</span></div>
-<?php if (!$assignments): ?><div class="card-body text-secondary">Belum ada penugasan untuk pilihan ini.</div><?php else: ?>
-<div class="table-responsive"><table class="table table-vcenter card-table table-hover"><thead><tr><th>Poliklinik</th><th>Shift</th><?php if ($admin): ?><th>Petugas</th><?php endif ?><th>Status</th><th>Pasien</th><?php if ($admin && $route==='home'): ?><th>Rerata terlambat</th><?php endif ?><th>Tindakan</th></tr></thead><tbody>
-<?php foreach ($assignments as $a): ?><tr>
+<div class="card-header"><h2 class="card-title">Laporan per poli dan shift</h2>
+<span class="badge bg-secondary-lt ms-auto"><?= count($reports) ?> shift</span></div>
+<?php if (!$reports): ?><div class="card-body text-secondary">Tidak ada jadwal atau laporan untuk pilihan ini.</div><?php else: ?>
+<div class="table-responsive"><table class="table table-vcenter card-table table-hover"><thead><tr><th>Poliklinik</th><th>Shift</th><th>Status</th><th>Pasien</th><?php if ($admin && $route==='home'): ?><th>Rerata terlambat</th><?php endif ?><th>Tindakan</th></tr></thead><tbody>
+<?php foreach ($reports as $a): ?><tr>
 <td class="clinic-cell"><strong><?= escape($a['poli']) ?></strong></td><td data-label="Shift"><?= escape($a['shift']) ?></td>
-<?php if ($admin): ?><td data-label="Petugas"><?= escape($a['petugas']) ?></td><?php endif ?>
 <td><span class="badge status-badge <?= $a['versi'] ? 'bg-green-lt' : 'bg-orange-lt' ?>"><span class="status-dot" aria-hidden="true"></span><?= $a['versi'] ? 'Sudah dilaporkan' : 'Belum dilaporkan' ?></span></td>
 <td data-label="Pasien"><?= escape($a['pasien'] ?? '-') ?></td>
 <?php if ($admin && $route==='home'): ?><td data-label="Rerata terlambat"><?= $a['terlambat'] === null ? '-' : escape($a['terlambat']).' mnt' ?></td><?php endif ?>
 <td class="action-cell">
-<?php if ($route === 'assignments' && !$a['versi']): ?><a href="/?view=assignments&amp;tanggal=<?= escape($date) ?>&amp;id=<?= (int)$a['id'] ?>">Ubah penugasan</a>
-<?php elseif ($a['versi'] || (!$admin && $date === $today)): ?><a href="/?view=report&amp;id=<?= (int)$a['id'] ?>"><?= $a['versi'] ? ($admin || $a['tanggal'] !== $today ? 'Lihat laporan' : 'Ubah laporan') : 'Isi laporan' ?></a>
+<?php if ($a['versi'] || (!$admin && $date === $today)): ?>
+<?php $reportHref = $a['id'] ? '?view=report&id='.(int)$a['id']
+    : '?view=report&poli='.(int)$a['poli_id'].'&shift='.rawurlencode($a['shift']); ?>
+<a href="/<?= escape($reportHref) ?>"><?= $a['versi'] ? ($admin || $date !== $today ? 'Lihat laporan' : 'Ubah laporan') : 'Isi laporan' ?></a>
 <?php else: ?><span class="empty-action">-</span><?php endif ?>
 </td></tr><?php endforeach ?>
 </tbody></table></div><?php endif ?>
